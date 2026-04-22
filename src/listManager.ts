@@ -129,6 +129,7 @@ export function parseListBlocks(lines: string[]): ListBlock[] {
       isChecked: isChecked(topLine),
       uuid: extractUuid(topLine),
       text: itemText(topLine),
+      startLine: i - blockLines.length,
     });
   }
 
@@ -161,23 +162,7 @@ export function sortBlocks(
 ): { sortedLines: string[]; updatedPluginData: PluginData } {
   const fileItems = { ...(pluginData.items[filePath] ?? {}) };
 
-  // Update metadata for toggled item
-  if (toggledUuid) {
-    const existing = fileItems[toggledUuid];
-    if (existing) {
-      if (nowChecked) {
-        fileItems[toggledUuid] = {
-          ...existing,
-          checkedAt: now,
-          checkCount: existing.checkCount + 1,
-        };
-      } else {
-        fileItems[toggledUuid] = { ...existing, uncheckedAt: now };
-      }
-    }
-  }
-
-  // Ensure all blocks have records; create missing ones
+  // Ensure all blocks have records; create missing ones first
   for (const block of blocks) {
     if (!block.uuid) continue;
     if (!fileItems[block.uuid]) {
@@ -189,6 +174,20 @@ export function sortBlocks(
       };
     } else {
       fileItems[block.uuid] = { ...fileItems[block.uuid], text: block.text };
+    }
+  }
+
+  // Update metadata for toggled item (record is guaranteed to exist now)
+  if (toggledUuid && fileItems[toggledUuid]) {
+    const existing = fileItems[toggledUuid];
+    if (nowChecked) {
+      fileItems[toggledUuid] = {
+        ...existing,
+        checkedAt: now,
+        checkCount: existing.checkCount + 1,
+      };
+    } else {
+      fileItems[toggledUuid] = { ...existing, uncheckedAt: now };
     }
   }
 

@@ -25,4 +25,5 @@ export interface ListBlock {
   isChecked: boolean;
   uuid: string | null;
   text: string;
+  startLine: number; // relative to the slice passed to parseListBlocks
 }

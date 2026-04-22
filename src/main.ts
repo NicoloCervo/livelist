@@ -119,13 +119,8 @@ export default class LiveListPlugin extends Plugin {
     const { blocks: withUuids, injected: uuidsInjected } = ensureUuids(blocks);
     blocks = withUuids;
 
-    // Find UUID of toggled item
-    const toggledBlock = blocks.find((b) => {
-      const topIndent = b.lines[0].length - b.lines[0].trimStart().length;
-      const toggledIndent = currentLines[toggledLine].length - currentLines[toggledLine].trimStart().length;
-      return topIndent === toggledIndent && b.lines[0].includes(currentLines[toggledLine].replace(/\s*<!--.*?-->\s*$/, "").trim().replace(/- \[[ xX]\]/, "").trim());
-    });
-    const toggledUuid = toggledBlock?.uuid ?? null;
+    const relativeToggled = toggledLine - boundaries.start;
+    const toggledUuid = blocks.find((b) => b.startLine === relativeToggled)?.uuid ?? null;
 
     const now = Date.now();
     const { sortedLines, updatedPluginData } = sortBlocks(
