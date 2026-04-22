@@ -1,0 +1,10 @@
+{
+  "id": "livelist",
+  "name": "LiveList",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Smart shopping list manager: auto-sorts checked items and restores positions when unchecked.",
+  "author": "NicoloCervo",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
