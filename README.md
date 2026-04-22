@@ -20,9 +20,18 @@ Obsidian mobile uses the same plugin system. The easiest way to get files onto y
 2. Let the sync complete on your mobile device.
 3. In Obsidian mobile: **Settings → Community plugins**, toggle on **LiveList**.
 
-If you don't use a sync service, you can transfer the two files manually over USB or AirDrop into the same `.obsidian/plugins/livelist/` path inside your vault.
+### Sync across devices with Self-hosted LiveSync
 
-> **Note:** Make sure *Community plugins* are enabled (Safe mode off) before trying to activate LiveList.
+[Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) can automatically sync LiveList (including its `data.json` — item positions and timestamps) across all your devices without any manual file copying.
+
+1. Install and configure Self-hosted LiveSync on all devices, connected to a shared CouchDB instance.
+2. In LiveSync settings, enable **Customization Sync (Beta)** and assign a device name on each device.
+3. LiveSync will detect LiveList in `.obsidian/plugins/livelist/` and prompt you to sync it.
+4. Choose **Automatic** mode — LiveSync then keeps `main.js`, `manifest.json`, and `data.json` in sync across devices automatically.
+
+> LiveList requires no special configuration to work with LiveSync — any standard Obsidian plugin manifest is sufficient.
+
+> **Note (all methods):** Make sure *Community plugins* are enabled (Safe mode off) in Obsidian settings before activating LiveList.
 
 ## Usage
 
