@@ -2,13 +2,11 @@ import { Editor, MarkdownFileInfo, MarkdownView, Plugin, TFile } from "obsidian"
 import { DEFAULT_SETTINGS, LiveListSettings, PluginData } from "./types";
 import { LiveListSettingTab } from "./settings";
 import {
-  ensureUuids,
   findListBoundaries,
   parseListBlocks,
+  refreshPositions,
   sortBlocks,
 } from "./listManager";
-
-const LOG = (...args: unknown[]) => console.debug("[livelist]", ...args);
 
 export default class LiveListPlugin extends Plugin {
   settings: LiveListSettings = DEFAULT_SETTINGS;
@@ -29,7 +27,7 @@ export default class LiveListPlugin extends Plugin {
         if (!file) return;
         this.app.vault.read(file).then((content) => {
           this._contentCache.set(file.path, content);
-          LOG("cache warmed for", file.path);
+          this.log("cache warmed for", file.path);
         });
       })
     );
@@ -40,7 +38,7 @@ export default class LiveListPlugin extends Plugin {
         if (this.pluginData.items[file.path]) {
           delete this.pluginData.items[file.path];
           this.saveSettings();
-          LOG("pruned data for deleted file", file.path);
+          this.log("pruned data for deleted file", file.path);
         }
       })
     );
@@ -52,17 +50,17 @@ export default class LiveListPlugin extends Plugin {
           this.pluginData.items[file.path] = this.pluginData.items[oldPath];
           delete this.pluginData.items[oldPath];
           this.saveSettings();
-          LOG("migrated data", oldPath, "→", file.path);
+          this.log("migrated data", oldPath, "→", file.path);
         }
       })
     );
 
-    LOG("loaded, autoSort =", this.settings.autoSort);
+    this.log("loaded, autoSort =", this.settings.autoSort);
   }
 
   async onunload(): Promise<void> {
     this._contentCache.clear();
-    LOG("unloaded");
+    this.log("unloaded");
   }
 
   async loadSettings(): Promise<void> {
@@ -79,6 +77,10 @@ export default class LiveListPlugin extends Plugin {
     await this.saveData(this.pluginData);
   }
 
+  private log(...args: unknown[]): void {
+    if (this.settings.debugLogging) console.debug("[livelist]", ...args);
+  }
+
   private isLiveListNote(file: TFile): boolean {
     const cache = this.app.metadataCache.getFileCache(file);
     if (!cache?.tags) return false;
@@ -86,19 +88,13 @@ export default class LiveListPlugin extends Plugin {
   }
 
   private onEditorChange(editor: Editor, info: MarkdownView | MarkdownFileInfo): void {
-    if (!this.settings.autoSort) {
-      LOG("skipped: autoSort is off");
-      return;
-    }
-    if (this._isSorting) return; // silent — fires on every keystroke while sorting
+    if (!this.settings.autoSort) return;
+    if (this._isSorting) return;
 
     const file = "file" in info ? info.file : null;
     if (!(file instanceof TFile)) return;
 
-    if (!this.isLiveListNote(file)) {
-      LOG("skipped: no #livelist tag in", file.path);
-      return;
-    }
+    if (!this.isLiveListNote(file)) return;
 
     const currentContent = editor.getValue();
     const previousContent = this._contentCache.get(file.path) ?? currentContent;
@@ -110,64 +106,87 @@ export default class LiveListPlugin extends Plugin {
     const previousLines = previousContent.split("\n");
 
     const toggled = this.findCheckboxToggle(previousLines, currentLines);
-    if (!toggled) {
-      LOG("change detected but no checkbox toggle found");
+
+    if (toggled) {
+      this.log(`checkbox toggle on line ${toggled.line}: nowChecked=${toggled.nowChecked}`);
+      this.handleToggle(editor, file, toggled, currentLines);
       return;
     }
 
-    const { line: toggledLine, nowChecked } = toggled;
-    LOG(`checkbox toggle on line ${toggledLine}: nowChecked=${nowChecked}`);
+    // No toggle — detect structural list changes (item added/removed/reordered)
+    // to keep stored positions in sync with user edits.
+    const changedLine = this.firstChangedLine(previousLines, currentLines);
+    if (changedLine === -1) return;
 
+    const currBoundaries = findListBoundaries(currentLines, changedLine);
+    if (!currBoundaries) return;
+
+    const prevBoundaries = findListBoundaries(previousLines, changedLine);
+    const currBlocks = parseListBlocks(
+      currentLines.slice(currBoundaries.start, currBoundaries.end + 1)
+    );
+    const prevCount = prevBoundaries
+      ? parseListBlocks(
+          previousLines.slice(prevBoundaries.start, prevBoundaries.end + 1)
+        ).length
+      : 0;
+
+    if (currBlocks.length !== prevCount) {
+      this.log(`list item count changed ${prevCount}→${currBlocks.length}, refreshing positions`);
+      this.pluginData = refreshPositions(currBlocks, file.path, this.pluginData, Date.now());
+      this.saveSettings();
+    }
+  }
+
+  private handleToggle(
+    editor: Editor,
+    file: TFile,
+    toggled: { line: number; nowChecked: boolean },
+    currentLines: string[]
+  ): void {
+    const { line: toggledLine, nowChecked } = toggled;
     const boundaries = findListBoundaries(currentLines, toggledLine);
     if (!boundaries) {
-      LOG("could not find list boundaries around line", toggledLine);
+      this.log("could not find list boundaries around line", toggledLine);
       return;
     }
-    LOG(`list boundaries: lines ${boundaries.start}–${boundaries.end}`);
+    this.log(`list boundaries: lines ${boundaries.start}–${boundaries.end}`);
 
     const listLines = currentLines.slice(boundaries.start, boundaries.end + 1);
-    let blocks = parseListBlocks(listLines);
-    LOG(`parsed ${blocks.length} block(s):`, blocks.map((b) => `"${b.text}" checked=${b.isChecked}`));
+    const blocks = parseListBlocks(listLines);
+    this.log(`parsed ${blocks.length} block(s):`, blocks.map((b) => `"${b.text}" checked=${b.isChecked}`));
 
     const hasChecked = blocks.some((b) => b.isChecked);
     const hasUnchecked = blocks.some((b) => !b.isChecked);
     if (!hasChecked || !hasUnchecked) {
-      LOG("list is all-checked or all-unchecked — no sort needed, injecting UUIDs only");
-      const { blocks: withUuids, injected } = ensureUuids(blocks);
-      if (injected) {
-        LOG("injected UUIDs into new items");
-        this.applyTransaction(editor, boundaries, withUuids.flatMap((b) => b.lines), currentLines, file.path);
-      }
+      this.log("list is all-checked or all-unchecked — refreshing positions only");
+      this.pluginData = refreshPositions(blocks, file.path, this.pluginData, Date.now());
+      this.saveSettings();
       return;
     }
 
-    const { blocks: withUuids, injected: uuidsInjected } = ensureUuids(blocks);
-    if (uuidsInjected) LOG("injected UUIDs into new items before sorting");
-    blocks = withUuids;
-
     const relativeToggled = toggledLine - boundaries.start;
-    const toggledUuid = blocks.find((b) => b.startLine === relativeToggled)?.uuid ?? null;
-    LOG("toggled block UUID:", toggledUuid);
+    const toggledKey =
+      blocks.find((b) => b.startLine === relativeToggled)?.text.toLowerCase() ?? null;
+    this.log("toggled item key:", toggledKey);
 
     const now = Date.now();
     const { sortedLines, updatedPluginData } = sortBlocks(
       blocks,
       file.path,
       this.pluginData,
-      toggledUuid,
+      toggledKey,
       nowChecked,
       now
     );
     this.pluginData = updatedPluginData;
 
-    const newListText = sortedLines.join("\n");
-    const oldListText = listLines.join("\n");
-    if (newListText === oldListText && !uuidsInjected) {
-      LOG("list already in correct order, no transaction needed");
+    if (sortedLines.join("\n") === listLines.join("\n")) {
+      this.log("list already in correct order, no transaction needed");
       return;
     }
 
-    LOG("applying sort transaction");
+    this.log("applying sort transaction");
     this.applyTransaction(editor, boundaries, sortedLines, currentLines, file.path);
     this.saveSettings();
   }
@@ -214,5 +233,13 @@ export default class LiveListPlugin extends Plugin {
       if (wasChecked && isNowUnchecked) return { line: i, nowChecked: false };
     }
     return null;
+  }
+
+  private firstChangedLine(prev: string[], curr: string[]): number {
+    const max = Math.max(prev.length, curr.length);
+    for (let i = 0; i < max; i++) {
+      if ((prev[i] ?? "") !== (curr[i] ?? "")) return i;
+    }
+    return -1;
   }
 }

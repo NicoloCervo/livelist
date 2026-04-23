@@ -1,9 +1,7 @@
-import type { ItemRecord, ListBlock, PluginData } from "./types";
+import type { ListBlock, PluginData } from "./types";
 
 const CHECKBOX_RE = /^(\s*)- \[[ xX]\]/;
 const CHECKED_RE = /^(\s*)- \[[xX]\]/;
-const UUID_RE = /<!--\s*ll:([a-f0-9]{4})\s*-->/;
-const UUID_INJECT_RE = /\s*<!--\s*ll:[a-f0-9]{4}\s*-->/g;
 
 export function isCheckboxLine(line: string): boolean {
   return CHECKBOX_RE.test(line);
@@ -13,26 +11,12 @@ export function isChecked(line: string): boolean {
   return CHECKED_RE.test(line);
 }
 
-export function extractUuid(line: string): string | null {
-  const m = UUID_RE.exec(line);
-  return m ? `ll:${m[1]}` : null;
-}
-
-export function injectUuid(line: string): string {
-  const hex = Math.floor(Math.random() * 0xffff)
-    .toString(16)
-    .padStart(4, "0");
-  return `${line} <!-- ll:${hex} -->`;
-}
-
-export function stripUuid(line: string): string {
-  return line.replace(UUID_INJECT_RE, "").trimEnd();
-}
-
 export function itemText(line: string): string {
-  return stripUuid(line)
-    .replace(/^\s*- \[[ xX]\]\s*/, "")
-    .trim();
+  return line.replace(/^\s*- \[[ xX]\]\s*/, "").trim();
+}
+
+export function itemKey(line: string): string {
+  return itemText(line).toLowerCase();
 }
 
 function indentOf(line: string): number {
@@ -127,7 +111,6 @@ export function parseListBlocks(lines: string[]): ListBlock[] {
     blocks.push({
       lines: blockLines,
       isChecked: isChecked(topLine),
-      uuid: extractUuid(topLine),
       text: itemText(topLine),
       startLine: i - blockLines.length,
     });
@@ -136,58 +119,42 @@ export function parseListBlocks(lines: string[]): ListBlock[] {
   return blocks;
 }
 
-export function ensureUuids(blocks: ListBlock[]): { blocks: ListBlock[]; injected: boolean } {
-  let injected = false;
-  const updated = blocks.map((block) => {
-    if (block.uuid !== null) return block;
-    const newTopLine = injectUuid(block.lines[0]);
-    const newUuid = extractUuid(newTopLine)!;
-    injected = true;
-    return {
-      ...block,
-      lines: [newTopLine, ...block.lines.slice(1)],
-      uuid: newUuid,
-    };
-  });
-  return { blocks: updated, injected };
-}
-
 export function sortBlocks(
   blocks: ListBlock[],
   filePath: string,
   pluginData: PluginData,
-  toggledUuid: string | null,
+  toggledKey: string | null,
   nowChecked: boolean,
   now: number
 ): { sortedLines: string[]; updatedPluginData: PluginData } {
   const fileItems = { ...(pluginData.items[filePath] ?? {}) };
 
-  // Ensure all blocks have records; create missing ones first
+  // Ensure all blocks have records first
   for (const block of blocks) {
-    if (!block.uuid) continue;
-    if (!fileItems[block.uuid]) {
-      fileItems[block.uuid] = {
+    const key = block.text.toLowerCase();
+    if (!fileItems[key]) {
+      fileItems[key] = {
         originalIndex: -1,
         text: block.text,
         createdAt: now,
         checkCount: 0,
       };
     } else {
-      fileItems[block.uuid] = { ...fileItems[block.uuid], text: block.text };
+      fileItems[key] = { ...fileItems[key], text: block.text };
     }
   }
 
-  // Update metadata for toggled item (record is guaranteed to exist now)
-  if (toggledUuid && fileItems[toggledUuid]) {
-    const existing = fileItems[toggledUuid];
+  // Update metadata for toggled item (record guaranteed to exist now)
+  if (toggledKey && fileItems[toggledKey]) {
+    const existing = fileItems[toggledKey];
     if (nowChecked) {
-      fileItems[toggledUuid] = {
+      fileItems[toggledKey] = {
         ...existing,
         checkedAt: now,
         checkCount: existing.checkCount + 1,
       };
     } else {
-      fileItems[toggledUuid] = { ...existing, uncheckedAt: now };
+      fileItems[toggledKey] = { ...existing, uncheckedAt: now };
     }
   }
 
@@ -196,38 +163,78 @@ export function sortBlocks(
 
   // Sort unchecked by stored originalIndex; unknown (-1) go to end
   const sortedUnchecked = [...unchecked].sort((a, b) => {
-    const ai = a.uuid ? (fileItems[a.uuid]?.originalIndex ?? -1) : -1;
-    const bi = b.uuid ? (fileItems[b.uuid]?.originalIndex ?? -1) : -1;
+    const ai = fileItems[a.text.toLowerCase()]?.originalIndex ?? -1;
+    const bi = fileItems[b.text.toLowerCase()]?.originalIndex ?? -1;
     if (ai === -1 && bi === -1) return 0;
     if (ai === -1) return 1;
     if (bi === -1) return -1;
     return ai - bi;
   });
 
-  // Refresh originalIndex for unchecked items after sort
+  // Refresh originalIndex after sort
   sortedUnchecked.forEach((block, idx) => {
-    if (block.uuid && fileItems[block.uuid]) {
-      fileItems[block.uuid] = { ...fileItems[block.uuid], originalIndex: idx };
+    const key = block.text.toLowerCase();
+    if (fileItems[key]) {
+      fileItems[key] = { ...fileItems[key], originalIndex: idx };
     }
   });
 
-  // Prune stale UUIDs for this file
-  const currentUuids = new Set(blocks.map((b) => b.uuid).filter(Boolean));
-  for (const uuid of Object.keys(fileItems)) {
-    if (!currentUuids.has(uuid)) {
-      delete fileItems[uuid];
+  // Prune stale keys
+  const currentKeys = new Set(blocks.map((b) => b.text.toLowerCase()));
+  for (const key of Object.keys(fileItems)) {
+    if (!currentKeys.has(key)) delete fileItems[key];
+  }
+
+  return {
+    sortedLines: [
+      ...sortedUnchecked.flatMap((b) => b.lines),
+      ...checked.flatMap((b) => b.lines),
+    ],
+    updatedPluginData: {
+      ...pluginData,
+      items: { ...pluginData.items, [filePath]: fileItems },
+    },
+  };
+}
+
+// Updates stored originalIndex values to reflect the current item order.
+// Called when items are added, removed, or manually reordered (no checkbox toggle).
+export function refreshPositions(
+  blocks: ListBlock[],
+  filePath: string,
+  pluginData: PluginData,
+  now: number
+): PluginData {
+  const fileItems = { ...(pluginData.items[filePath] ?? {}) };
+
+  for (const block of blocks) {
+    const key = block.text.toLowerCase();
+    if (!fileItems[key]) {
+      fileItems[key] = {
+        originalIndex: -1,
+        text: block.text,
+        createdAt: now,
+        checkCount: 0,
+      };
+    } else {
+      fileItems[key] = { ...fileItems[key], text: block.text };
     }
   }
 
-  const updatedPluginData: PluginData = {
+  const unchecked = blocks.filter((b) => !b.isChecked);
+  unchecked.forEach((block, idx) => {
+    const key = block.text.toLowerCase();
+    fileItems[key] = { ...fileItems[key], originalIndex: idx };
+  });
+
+  // Prune stale keys
+  const currentKeys = new Set(blocks.map((b) => b.text.toLowerCase()));
+  for (const key of Object.keys(fileItems)) {
+    if (!currentKeys.has(key)) delete fileItems[key];
+  }
+
+  return {
     ...pluginData,
     items: { ...pluginData.items, [filePath]: fileItems },
   };
-
-  const sortedLines = [
-    ...sortedUnchecked.flatMap((b) => b.lines),
-    ...checked.flatMap((b) => b.lines),
-  ];
-
-  return { sortedLines, updatedPluginData };
 }

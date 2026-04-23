@@ -1,9 +1,11 @@
 export interface LiveListSettings {
   autoSort: boolean;
+  debugLogging: boolean;
 }
 
 export const DEFAULT_SETTINGS: LiveListSettings = {
   autoSort: true,
+  debugLogging: false,
 };
 
 export interface ItemRecord {
@@ -23,7 +25,6 @@ export interface PluginData {
 export interface ListBlock {
   lines: string[];
   isChecked: boolean;
-  uuid: string | null;
   text: string;
   startLine: number; // relative to the slice passed to parseListBlocks
 }
