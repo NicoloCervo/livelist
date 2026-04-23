@@ -8,6 +8,8 @@ import {
   sortBlocks,
 } from "./listManager";
 
+const LOG = (...args: unknown[]) => console.debug("[livelist]", ...args);
+
 export default class LiveListPlugin extends Plugin {
   settings: LiveListSettings = DEFAULT_SETTINGS;
   private pluginData: PluginData = { settings: DEFAULT_SETTINGS, items: {} };
@@ -27,6 +29,7 @@ export default class LiveListPlugin extends Plugin {
         if (!file) return;
         this.app.vault.read(file).then((content) => {
           this._contentCache.set(file.path, content);
+          LOG("cache warmed for", file.path);
         });
       })
     );
@@ -37,6 +40,7 @@ export default class LiveListPlugin extends Plugin {
         if (this.pluginData.items[file.path]) {
           delete this.pluginData.items[file.path];
           this.saveSettings();
+          LOG("pruned data for deleted file", file.path);
         }
       })
     );
@@ -48,13 +52,17 @@ export default class LiveListPlugin extends Plugin {
           this.pluginData.items[file.path] = this.pluginData.items[oldPath];
           delete this.pluginData.items[oldPath];
           this.saveSettings();
+          LOG("migrated data", oldPath, "→", file.path);
         }
       })
     );
+
+    LOG("loaded, autoSort =", this.settings.autoSort);
   }
 
   async onunload(): Promise<void> {
     this._contentCache.clear();
+    LOG("unloaded");
   }
 
   async loadSettings(): Promise<void> {
@@ -78,13 +86,19 @@ export default class LiveListPlugin extends Plugin {
   }
 
   private onEditorChange(editor: Editor, info: MarkdownView | MarkdownFileInfo): void {
-    if (!this.settings.autoSort) return;
-    if (this._isSorting) return;
+    if (!this.settings.autoSort) {
+      LOG("skipped: autoSort is off");
+      return;
+    }
+    if (this._isSorting) return; // silent — fires on every keystroke while sorting
 
     const file = "file" in info ? info.file : null;
     if (!(file instanceof TFile)) return;
 
-    if (!this.isLiveListNote(file)) return;
+    if (!this.isLiveListNote(file)) {
+      LOG("skipped: no #livelist tag in", file.path);
+      return;
+    }
 
     const currentContent = editor.getValue();
     const previousContent = this._contentCache.get(file.path) ?? currentContent;
@@ -96,31 +110,44 @@ export default class LiveListPlugin extends Plugin {
     const previousLines = previousContent.split("\n");
 
     const toggled = this.findCheckboxToggle(previousLines, currentLines);
-    if (!toggled) return;
+    if (!toggled) {
+      LOG("change detected but no checkbox toggle found");
+      return;
+    }
 
     const { line: toggledLine, nowChecked } = toggled;
+    LOG(`checkbox toggle on line ${toggledLine}: nowChecked=${nowChecked}`);
+
     const boundaries = findListBoundaries(currentLines, toggledLine);
-    if (!boundaries) return;
+    if (!boundaries) {
+      LOG("could not find list boundaries around line", toggledLine);
+      return;
+    }
+    LOG(`list boundaries: lines ${boundaries.start}–${boundaries.end}`);
 
     const listLines = currentLines.slice(boundaries.start, boundaries.end + 1);
     let blocks = parseListBlocks(listLines);
+    LOG(`parsed ${blocks.length} block(s):`, blocks.map((b) => `"${b.text}" checked=${b.isChecked}`));
 
     const hasChecked = blocks.some((b) => b.isChecked);
     const hasUnchecked = blocks.some((b) => !b.isChecked);
     if (!hasChecked || !hasUnchecked) {
-      // Still need to inject UUIDs for new items, but no sorting needed
+      LOG("list is all-checked or all-unchecked — no sort needed, injecting UUIDs only");
       const { blocks: withUuids, injected } = ensureUuids(blocks);
       if (injected) {
+        LOG("injected UUIDs into new items");
         this.applyTransaction(editor, boundaries, withUuids.flatMap((b) => b.lines), currentLines, file.path);
       }
       return;
     }
 
     const { blocks: withUuids, injected: uuidsInjected } = ensureUuids(blocks);
+    if (uuidsInjected) LOG("injected UUIDs into new items before sorting");
     blocks = withUuids;
 
     const relativeToggled = toggledLine - boundaries.start;
     const toggledUuid = blocks.find((b) => b.startLine === relativeToggled)?.uuid ?? null;
+    LOG("toggled block UUID:", toggledUuid);
 
     const now = Date.now();
     const { sortedLines, updatedPluginData } = sortBlocks(
@@ -135,8 +162,12 @@ export default class LiveListPlugin extends Plugin {
 
     const newListText = sortedLines.join("\n");
     const oldListText = listLines.join("\n");
-    if (newListText === oldListText && !uuidsInjected) return;
+    if (newListText === oldListText && !uuidsInjected) {
+      LOG("list already in correct order, no transaction needed");
+      return;
+    }
 
+    LOG("applying sort transaction");
     this.applyTransaction(editor, boundaries, sortedLines, currentLines, file.path);
     this.saveSettings();
   }
