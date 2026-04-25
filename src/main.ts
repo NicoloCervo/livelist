@@ -1,4 +1,4 @@
-import { Editor, MarkdownFileInfo, MarkdownView, Plugin, TFile } from "obsidian";
+import { Editor, getAllTags, MarkdownFileInfo, MarkdownView, Plugin, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, LiveListSettings, PluginData } from "./types";
 import { LiveListSettingTab } from "./settings";
 import {
@@ -81,26 +81,58 @@ export default class LiveListPlugin extends Plugin {
     if (this.settings.debugLogging) console.debug("[livelist]", ...args);
   }
 
+  private verbose(...args: unknown[]): void {
+    if (this.settings.verboseLogging) console.debug("[livelist:verbose]", ...args);
+  }
+
+  private error(...args: unknown[]): void {
+    console.error("[livelist]", ...args);
+  }
+
   private isLiveListNote(file: TFile): boolean {
     const cache = this.app.metadataCache.getFileCache(file);
-    if (!cache?.tags) return false;
-    return cache.tags.some((t) => t.tag === "#livelist");
+    if (!cache) return false;
+    // getAllTags covers both inline (#livelist in body) and frontmatter (tags: [livelist])
+    return (getAllTags(cache) ?? []).includes("#livelist");
   }
 
   private onEditorChange(editor: Editor, info: MarkdownView | MarkdownFileInfo): void {
-    if (!this.settings.autoSort) return;
-    if (this._isSorting) return;
+    try {
+      this._onEditorChange(editor, info);
+    } catch (e) {
+      this.error("uncaught error in editor-change handler:", e);
+    }
+  }
+
+  private _onEditorChange(editor: Editor, info: MarkdownView | MarkdownFileInfo): void {
+    if (!this.settings.autoSort) {
+      this.verbose("skipped: autoSort is off");
+      return;
+    }
+    if (this._isSorting) {
+      this.verbose("skipped: reentrant sort in progress");
+      return;
+    }
 
     const file = "file" in info ? info.file : null;
-    if (!(file instanceof TFile)) return;
+    if (!(file instanceof TFile)) {
+      this.verbose("skipped: no TFile");
+      return;
+    }
 
-    if (!this.isLiveListNote(file)) return;
+    if (!this.isLiveListNote(file)) {
+      this.verbose("skipped: no #livelist tag in", file.path);
+      return;
+    }
 
     const currentContent = editor.getValue();
     const previousContent = this._contentCache.get(file.path) ?? currentContent;
     this._contentCache.set(file.path, currentContent);
 
-    if (currentContent === previousContent) return;
+    if (currentContent === previousContent) {
+      this.verbose("skipped: content unchanged");
+      return;
+    }
 
     const currentLines = currentContent.split("\n");
     const previousLines = previousContent.split("\n");
@@ -113,13 +145,18 @@ export default class LiveListPlugin extends Plugin {
       return;
     }
 
+    this.verbose("no checkbox toggle detected — checking for structural list change");
+
     // No toggle — detect structural list changes (item added/removed/reordered)
     // to keep stored positions in sync with user edits.
     const changedLine = this.firstChangedLine(previousLines, currentLines);
     if (changedLine === -1) return;
 
     const currBoundaries = findListBoundaries(currentLines, changedLine);
-    if (!currBoundaries) return;
+    if (!currBoundaries) {
+      this.verbose("changed line is not inside a list");
+      return;
+    }
 
     const prevBoundaries = findListBoundaries(previousLines, changedLine);
     const currBlocks = parseListBlocks(
@@ -135,6 +172,8 @@ export default class LiveListPlugin extends Plugin {
       this.log(`list item count changed ${prevCount}→${currBlocks.length}, refreshing positions`);
       this.pluginData = refreshPositions(currBlocks, file.path, this.pluginData, Date.now());
       this.saveSettings();
+    } else {
+      this.verbose(`list item count unchanged (${currBlocks.length}), skipping position refresh`);
     }
   }
 

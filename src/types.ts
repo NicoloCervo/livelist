@@ -1,11 +1,13 @@
 export interface LiveListSettings {
   autoSort: boolean;
   debugLogging: boolean;
+  verboseLogging: boolean;
 }
 
 export const DEFAULT_SETTINGS: LiveListSettings = {
   autoSort: true,
   debugLogging: false,
+  verboseLogging: false,
 };
 
 export interface ItemRecord {

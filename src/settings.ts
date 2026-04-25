@@ -30,12 +30,25 @@ export class LiveListSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Debug logging")
       .setDesc(
-        "Log plugin activity to the developer console (Ctrl+Shift+I / Cmd+Option+I). " +
+        "Log key plugin events to the developer console (Ctrl+Shift+I / Cmd+Option+I). " +
           "On mobile, use the Logstravaganza plugin to capture logs to a note."
       )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.debugLogging).onChange(async (value) => {
           this.plugin.settings.debugLogging = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Verbose logging")
+      .setDesc(
+        "Log every skipped editor event with its reason. Useful when the plugin " +
+          "appears to do nothing. Errors are always logged regardless of this setting."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.verboseLogging).onChange(async (value) => {
+          this.plugin.settings.verboseLogging = value;
           await this.plugin.saveSettings();
         })
       );
